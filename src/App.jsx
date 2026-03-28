@@ -1,10 +1,11 @@
 import "./App.css";
 import { useEffect, useMemo, useState } from "react";
 
-const REPORTS_KEY = "rv_reports_v2";
-const USER_KEY = "rv_user_v2";
-const CATALOGS_KEY = "rv_catalogs_v2";
-const NOTIFICATIONS_KEY = "rv_notifications_v2";
+const REPORTS_KEY = "rv_reports_v3";
+const USER_KEY = "rv_user_v3";
+const CATALOGS_KEY = "rv_catalogs_v3";
+const NOTIFICATIONS_KEY = "rv_notifications_v3";
+const AUDIT_KEY = "rv_audit_v3";
 
 const DEFAULT_CATALOGS = {
   types: ["Bache", "Luminaria", "Basura", "Fuga de agua", "Banqueta"],
@@ -67,12 +68,49 @@ function saveNotifications(list) {
   saveJson(NOTIFICATIONS_KEY, list);
 }
 
-function normalizeText(value) {
+function loadAuditTrail() {
+  return safeRead(AUDIT_KEY, []);
+}
+
+function saveAuditTrail(list) {
+  saveJson(AUDIT_KEY, list);
+}
+
+export function normalizeText(value) {
   return String(value || "")
     .trim()
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function createModerationRecord(by, hidden, reason) {
+  return {
+    id: crypto.randomUUID(),
+    by,
+    hidden,
+    reason: reason || (hidden ? "Contenido ocultado por moderación." : "Contenido restaurado."),
+    date: new Date().toISOString(),
+  };
+}
+
+function ensureReportShape(report) {
+  return {
+    ...report,
+    hidden: report.hidden ?? false,
+    hiddenReason: report.hiddenReason || "",
+    moderationHistory: report.moderationHistory || [],
+    statusHistory: report.statusHistory || [],
+    comments: (report.comments || []).map((comment) => ({
+      ...comment,
+      hidden: comment.hidden ?? false,
+      moderationHistory: comment.moderationHistory || [],
+    })),
+  };
+}
+
+function loadNormalizedReports() {
+  return loadReports().map(ensureReportShape);
 }
 
 function makeSeedReports() {
@@ -87,6 +125,9 @@ function makeSeedReports() {
       status: "Pendiente",
       createdAt: new Date(now - 1000 * 60 * 60 * 24).toISOString(),
       createdBy: "vecino1@demo.com",
+      hidden: false,
+      hiddenReason: "",
+      moderationHistory: [],
       statusHistory: [
         {
           id: crypto.randomUUID(),
@@ -102,6 +143,8 @@ function makeSeedReports() {
           text: "El bache ya tiene varios días.",
           by: "vecino1@demo.com",
           date: new Date(now - 1000 * 60 * 60 * 20).toISOString(),
+          hidden: false,
+          moderationHistory: [],
         },
       ],
     },
@@ -114,6 +157,9 @@ function makeSeedReports() {
       status: "En proceso",
       createdAt: new Date(now - 1000 * 60 * 60 * 10).toISOString(),
       createdBy: "vecino2@demo.com",
+      hidden: false,
+      hiddenReason: "",
+      moderationHistory: [],
       statusHistory: [
         {
           id: crypto.randomUUID(),
@@ -156,6 +202,18 @@ function seedIfEmpty() {
       },
     ]);
   }
+
+  if (!localStorage.getItem(AUDIT_KEY)) {
+    saveAuditTrail([
+      {
+        id: crypto.randomUUID(),
+        action: "seed.init",
+        actor: "sistema",
+        details: "Se inicializaron datos demo del portal.",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }
 }
 
 function buildNotification(userEmail, title, message) {
@@ -169,11 +227,21 @@ function buildNotification(userEmail, title, message) {
   };
 }
 
+function buildAuditEntry(action, actor, details) {
+  return {
+    id: crypto.randomUUID(),
+    action,
+    actor,
+    details,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
-function findDuplicates(reports, candidate) {
+export function findDuplicates(reports, candidate) {
   const type = normalizeText(candidate.type);
   const location = normalizeText(candidate.location);
   const zone = normalizeText(candidate.zone);
@@ -192,47 +260,105 @@ function findDuplicates(reports, candidate) {
   });
 }
 
+function escapeCsvCell(value) {
+  const text = String(value ?? "").replace(/"/g, '""');
+  return `"${text}"`;
+}
+
+export function buildCsvRows(reports) {
+  const headers = [
+    "ID",
+    "Tipo",
+    "Zona",
+    "Ubicación",
+    "Estatus",
+    "Oculto",
+    "Motivo de moderación",
+    "Creado por",
+    "Fecha",
+    "Comentarios visibles",
+  ];
+
+  const rows = reports.map((report) => [
+    report.id,
+    report.type,
+    report.zone,
+    report.location,
+    report.status,
+    report.hidden ? "Sí" : "No",
+    report.hiddenReason || "",
+    report.createdBy,
+    formatDate(report.createdAt),
+    (report.comments || []).filter((comment) => !comment.hidden).length,
+  ]);
+
+  return [headers, ...rows]
+    .map((row) => row.map(escapeCsvCell).join(","))
+    .join("\n");
+}
+
+function filterCollection(reports, filters, includeHidden = false) {
+  return reports.filter((report) => {
+    const statusOk = filters.status === "Todos" || report.status === filters.status;
+    const zoneOk = filters.zone === "Todas" || report.zone === filters.zone;
+    const typeOk = filters.type === "Todos" || report.type === filters.type;
+    const searchOk =
+      !filters.search ||
+      [report.type, report.description, report.location, report.zone, report.createdBy]
+        .join(" ")
+        .toLowerCase()
+        .includes(filters.search.toLowerCase());
+    const hiddenOk = includeHidden || !report.hidden;
+    return statusOk && zoneOk && typeOk && searchOk && hiddenOk;
+  });
+}
+
 export default function App() {
   const [user, setUser] = useState(() => loadUser());
   const [page, setPage] = useState("list");
-  const [reports, setReports] = useState(() => loadReports());
+  const [reports, setReports] = useState(() => loadNormalizedReports());
   const [catalogs, setCatalogs] = useState(() => loadCatalogs());
   const [notifications, setNotifications] = useState(() => loadNotifications());
-  const [filters, setFilters] = useState({ status: "Todos", zone: "Todas", type: "Todos" });
+  const [auditTrail, setAuditTrail] = useState(() => loadAuditTrail());
+  const [statusMessage, setStatusMessage] = useState("Portal cargado correctamente.");
+  const [filters, setFilters] = useState({
+    status: "Todos",
+    zone: "Todas",
+    type: "Todos",
+    search: "",
+    showHidden: false,
+  });
   const [selectedId, setSelectedId] = useState(null);
 
   useEffect(() => {
     seedIfEmpty();
-    setReports(loadReports());
+    setReports(loadNormalizedReports());
     setCatalogs(loadCatalogs());
     setNotifications(loadNotifications());
+    setAuditTrail(loadAuditTrail());
   }, []);
 
   const isAdmin = user?.role === "admin";
+  const publicReports = useMemo(() => reports.filter((report) => !report.hidden), [reports]);
 
   const visibleReports = useMemo(() => {
-    return reports.filter((report) => {
-      const statusOk = filters.status === "Todos" || report.status === filters.status;
-      const zoneOk = filters.zone === "Todas" || report.zone === filters.zone;
-      const typeOk = filters.type === "Todos" || report.type === filters.type;
-      return statusOk && zoneOk && typeOk;
-    });
-  }, [reports, filters]);
+    return filterCollection(reports, filters, isAdmin && filters.showHidden);
+  }, [reports, filters, isAdmin]);
 
   const stats = useMemo(() => {
     return STATUS_OPTIONS.reduce((acc, status) => {
-      acc[status] = reports.filter((report) => report.status === status).length;
+      acc[status] = publicReports.filter((report) => report.status === status).length;
       return acc;
     }, {});
-  }, [reports]);
+  }, [publicReports]);
 
   const zoneStats = useMemo(() => {
     return catalogs.zones.map((zone) => ({
       zone,
-      total: reports.filter((report) => report.zone === zone).length,
-      pending: reports.filter((report) => report.zone === zone && report.status === "Pendiente").length,
+      total: publicReports.filter((report) => report.zone === zone).length,
+      pending: publicReports.filter((report) => report.zone === zone && report.status === "Pendiente").length,
     }));
-  }, [catalogs.zones, reports]);
+  }, [catalogs.zones, publicReports]);
 
   const userNotifications = useMemo(() => {
     if (!user) return [];
@@ -243,13 +369,16 @@ export default function App() {
   const unreadNotifications = userNotifications.filter((item) => !item.read).length;
 
   const selectedReport = useMemo(
-    () => reports.find((report) => report.id === selectedId) || null,
-    [reports, selectedId]
+    () => visibleReports.find((report) => report.id === selectedId) || null,
+    [visibleReports, selectedId]
   );
 
+  const hiddenReportsCount = reports.filter((report) => report.hidden).length;
+
   function syncReports(next) {
-    setReports(next);
-    saveReports(next);
+    const normalized = next.map(ensureReportShape);
+    setReports(normalized);
+    saveReports(normalized);
   }
 
   function syncCatalogs(next) {
@@ -262,12 +391,27 @@ export default function App() {
     saveNotifications(next);
   }
 
+  function appendAudit(action, actor, details) {
+    const entry = buildAuditEntry(action, actor, details);
+    setAuditTrail((previous) => {
+      const next = [entry, ...previous].slice(0, 300);
+      saveAuditTrail(next);
+      return next;
+    });
+  }
+
+  function announce(message) {
+    setStatusMessage(message);
+  }
+
   function onLogin(email, password) {
     if (email === "admin@admin.com" && password === "admin123") {
       const nextUser = { email, role: "admin" };
       setUser(nextUser);
       saveUser(nextUser);
       setPage("admin");
+      appendAudit("auth.login", email, "Inicio de sesión como administrador.");
+      announce("Sesión iniciada como administrador.");
       return;
     }
 
@@ -276,20 +420,27 @@ export default function App() {
       setUser(nextUser);
       saveUser(nextUser);
       setPage("list");
+      appendAudit("auth.login", email, "Inicio de sesión como ciudadano.");
+      announce("Sesión iniciada correctamente.");
       return;
     }
 
+    announce("Credenciales inválidas.");
     alert("Credenciales inválidas. Usa un correo válido y contraseña de 4 o más caracteres.");
   }
 
   function logout() {
+    const actor = user?.email || "usuario";
     setUser(null);
     clearUser();
     setPage("login");
+    appendAudit("auth.logout", actor, "Cierre de sesión.");
+    announce("Sesión cerrada.");
   }
 
   function createReport({ type, description, location, zone }) {
     if (!user) {
+      announce("Debes iniciar sesión antes de registrar un reporte.");
       alert("Debes iniciar sesión.");
       return;
     }
@@ -299,7 +450,11 @@ export default function App() {
       const proceed = window.confirm(
         `Se detectaron ${duplicateMatches.length} reportes similares en ${zone}. ¿Deseas crear el reporte de todas formas?`
       );
-      if (!proceed) return;
+      if (!proceed) {
+        appendAudit("report.duplicate_cancel", user.email, `Se canceló un reporte duplicado de ${type} en ${zone}.`);
+        announce("Se canceló el alta del reporte por posible duplicado.");
+        return;
+      }
     }
 
     const newReport = {
@@ -311,6 +466,9 @@ export default function App() {
       status: "Pendiente",
       createdAt: new Date().toISOString(),
       createdBy: user.email,
+      hidden: false,
+      hiddenReason: "",
+      moderationHistory: [],
       statusHistory: [
         {
           id: crypto.randomUUID(),
@@ -331,15 +489,19 @@ export default function App() {
     ]);
     setSelectedId(newReport.id);
     setPage("list");
+    appendAudit("report.create", user.email, `Nuevo reporte ${type} en ${zone}.`);
+    announce("Reporte registrado correctamente.");
   }
 
   function updateStatus(id, status, note = "") {
     if (!user) return;
 
     let updatedOwner = null;
+    let reportType = "reporte";
     const nextReports = reports.map((report) => {
       if (report.id !== id) return report;
       updatedOwner = report.createdBy;
+      reportType = report.type;
       return {
         ...report,
         status,
@@ -364,13 +526,20 @@ export default function App() {
         ...notifications,
       ]);
     }
+
+    appendAudit("report.status", user.email, `Se cambió a ${status} un reporte de ${reportType}.`);
+    announce(`Estado actualizado a ${status}.`);
   }
 
   function addComment(reportId, text) {
     if (!user || !text.trim()) return;
 
+    let owner = null;
+    let reportType = "reporte";
     const nextReports = reports.map((report) => {
       if (report.id !== reportId) return report;
+      owner = report.createdBy;
+      reportType = report.type;
       return {
         ...report,
         comments: [
@@ -379,6 +548,8 @@ export default function App() {
             text: text.trim(),
             by: user.email,
             date: new Date().toISOString(),
+            hidden: false,
+            moderationHistory: [],
           },
           ...(report.comments || []),
         ],
@@ -386,13 +557,89 @@ export default function App() {
     });
 
     syncReports(nextReports);
+
+    if (owner && owner !== user.email) {
+      syncNotifications([
+        buildNotification(owner, "Nuevo comentario", `Hay un nuevo comentario en tu reporte de ${reportType}.`),
+        ...notifications,
+      ]);
+    }
+
+    appendAudit("report.comment", user.email, `Se agregó comentario a un reporte de ${reportType}.`);
+    announce("Comentario agregado correctamente.");
+  }
+
+  function moderateReport(reportId, hidden, reason) {
+    if (!user || !isAdmin) return;
+
+    const cleanReason = reason?.trim() || (hidden ? "Contenido ocultado por moderación." : "Contenido restaurado.");
+    let reportType = "reporte";
+
+    const nextReports = reports.map((report) => {
+      if (report.id !== reportId) return report;
+      reportType = report.type;
+      return {
+        ...report,
+        hidden,
+        hiddenReason: hidden ? cleanReason : "",
+        moderationHistory: [
+          createModerationRecord(user.email, hidden, cleanReason),
+          ...(report.moderationHistory || []),
+        ],
+      };
+    });
+
+    syncReports(nextReports);
+    appendAudit(
+      hidden ? "moderation.hide_report" : "moderation.restore_report",
+      user.email,
+      `${hidden ? "Se ocultó" : "Se restauró"} un reporte de ${reportType}. Motivo: ${cleanReason}`
+    );
+    announce(hidden ? "Reporte ocultado por moderación." : "Reporte restaurado.");
+  }
+
+  function moderateComment(reportId, commentId, hidden, reason) {
+    if (!user || !isAdmin) return;
+
+    const cleanReason = reason?.trim() || (hidden ? "Comentario ocultado por moderación." : "Comentario restaurado.");
+    let reportType = "reporte";
+
+    const nextReports = reports.map((report) => {
+      if (report.id !== reportId) return report;
+      reportType = report.type;
+      return {
+        ...report,
+        comments: (report.comments || []).map((comment) => {
+          if (comment.id !== commentId) return comment;
+          return {
+            ...comment,
+            hidden,
+            moderationHistory: [
+              createModerationRecord(user.email, hidden, cleanReason),
+              ...(comment.moderationHistory || []),
+            ],
+          };
+        }),
+      };
+    });
+
+    syncReports(nextReports);
+    appendAudit(
+      hidden ? "moderation.hide_comment" : "moderation.restore_comment",
+      user.email,
+      `${hidden ? "Se ocultó" : "Se restauró"} un comentario de un reporte de ${reportType}. Motivo: ${cleanReason}`
+    );
+    announce(hidden ? "Comentario ocultado." : "Comentario restaurado.");
   }
 
   function addCatalogItem(kind, value) {
+    if (!user || !isAdmin) return;
+
     const clean = value.trim();
     if (!clean) return;
     if (catalogs[kind].includes(clean)) {
       alert("Ese valor ya existe en el catálogo.");
+      announce("Ese valor ya existe en el catálogo.");
       return;
     }
 
@@ -400,9 +647,13 @@ export default function App() {
       ...catalogs,
       [kind]: [...catalogs[kind], clean],
     });
+    appendAudit("catalog.add", user.email, `Se agregó ${clean} al catálogo ${kind}.`);
+    announce(`Se agregó ${clean} al catálogo.`);
   }
 
   function removeCatalogItem(kind, value) {
+    if (!user || !isAdmin) return;
+
     const inUse =
       kind === "types"
         ? reports.some((report) => report.type === value)
@@ -410,6 +661,7 @@ export default function App() {
 
     if (inUse) {
       alert("No puedes eliminar este elemento porque ya está en uso en reportes registrados.");
+      announce("No se puede eliminar el elemento porque ya está en uso.");
       return;
     }
 
@@ -417,6 +669,8 @@ export default function App() {
       ...catalogs,
       [kind]: catalogs[kind].filter((item) => item !== value),
     });
+    appendAudit("catalog.remove", user.email, `Se eliminó ${value} del catálogo ${kind}.`);
+    announce(`Se eliminó ${value} del catálogo.`);
   }
 
   function markAllNotificationsAsRead() {
@@ -428,10 +682,48 @@ export default function App() {
     });
 
     syncNotifications(nextNotifications);
+    appendAudit("notification.mark_read", user.email, "Se marcaron notificaciones como leídas.");
+    announce("Notificaciones marcadas como leídas.");
+  }
+
+  function exportReportsCsv(exportFilters) {
+    if (!user || !isAdmin) return;
+
+    const filteredReports = filterCollection(reports, exportFilters, exportFilters.showHidden);
+    const csv = buildCsvRows(filteredReports);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `reporte_vecinal_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    appendAudit(
+      "export.csv",
+      user.email,
+      `Se exportaron ${filteredReports.length} reportes con filtros ${JSON.stringify(exportFilters)}.`
+    );
+    announce(`CSV exportado con ${filteredReports.length} reportes.`);
+  }
+
+  const summaryCards = [
+    { label: "Pendientes", value: stats.Pendiente || 0 },
+    { label: "En proceso", value: stats["En proceso"] || 0 },
+    { label: "Resueltos", value: stats.Resuelto || 0 },
+    { label: "Total público", value: publicReports.length, accent: true },
+  ];
+
+  if (isAdmin) {
+    summaryCards.push({ label: "Ocultos", value: hiddenReportsCount, warning: true });
   }
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Saltar al contenido principal</a>
+
       <header className="topbar">
         <div>
           <p className="eyebrow">Portal ciudadano</p>
@@ -439,7 +731,7 @@ export default function App() {
         </div>
 
         <div className="topbar-actions">
-          <nav className="nav-tabs">
+          <nav className="nav-tabs" aria-label="Navegación principal">
             <button className={page === "list" ? "active" : ""} onClick={() => setPage("list")}>Explorar</button>
             <button className={page === "create" ? "active" : ""} onClick={() => setPage("create")}>Crear reporte</button>
             <button className={page === "map" ? "active" : ""} onClick={() => setPage("map")}>Mapa</button>
@@ -462,75 +754,86 @@ export default function App() {
         </div>
       </header>
 
+      <div className="sr-only" aria-live="polite">{statusMessage}</div>
+
       {!user && page !== "login" && (
         <div className="alert-box">
           Para registrar incidencias, revisar notificaciones o administrar catálogos, primero inicia sesión.
         </div>
       )}
 
-      <section className="stats-grid">
-        {STATUS_OPTIONS.map((status) => (
-          <article key={status} className="stat-card">
-            <span>{status}</span>
-            <strong>{stats[status] || 0}</strong>
+      <section className="stats-grid" aria-label="Resumen de indicadores">
+        {summaryCards.map((card) => (
+          <article
+            key={card.label}
+            className={`stat-card ${card.accent ? "accent" : ""} ${card.warning ? "warning" : ""}`.trim()}
+          >
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
           </article>
         ))}
-        <article className="stat-card accent">
-          <span>Total reportes</span>
-          <strong>{reports.length}</strong>
-        </article>
       </section>
 
-      {page === "login" && <Login onLogin={onLogin} />}
+      <main id="main-content">
+        {page === "login" && <Login onLogin={onLogin} />}
 
-      {page === "create" && (
-        <CreateReport
-          user={user}
-          reports={reports}
-          catalogs={catalogs}
-          onCreate={createReport}
-        />
-      )}
+        {page === "create" && (
+          <CreateReport
+            user={user}
+            reports={reports.filter((report) => !report.hidden)}
+            catalogs={catalogs}
+            onCreate={createReport}
+          />
+        )}
 
-      {page === "list" && (
-        <>
-          <FilterBar catalogs={catalogs} filters={filters} onChange={setFilters} />
-          <div className="content-grid">
-            <ReportList
-              reports={visibleReports}
-              onSelect={setSelectedId}
-              selectedId={selectedId}
-            />
-            <ReportDetail
-              report={selectedReport}
-              user={user}
-              isAdmin={isAdmin}
-              onAddComment={addComment}
-              onUpdateStatus={updateStatus}
-            />
-          </div>
-        </>
-      )}
+        {page === "list" && (
+          <>
+            <FilterBar catalogs={catalogs} filters={filters} onChange={setFilters} isAdmin={isAdmin} />
+            <div className="content-grid">
+              <ReportList
+                reports={visibleReports}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  announce("Reporte seleccionado para consulta de detalle.");
+                }}
+                selectedId={selectedId}
+                isAdmin={isAdmin}
+              />
+              <ReportDetail
+                report={selectedReport}
+                user={user}
+                isAdmin={isAdmin}
+                onAddComment={addComment}
+                onUpdateStatus={updateStatus}
+                onModerateReport={moderateReport}
+                onModerateComment={moderateComment}
+              />
+            </div>
+          </>
+        )}
 
-      {page === "map" && <MapBoard zoneStats={zoneStats} reports={reports} />}
+        {page === "map" && <MapBoard zoneStats={zoneStats} reports={publicReports} />}
 
-      {page === "notifications" && (
-        <NotificationsPanel
-          items={userNotifications}
-          onMarkAllRead={markAllNotificationsAsRead}
-        />
-      )}
+        {page === "notifications" && (
+          <NotificationsPanel
+            items={userNotifications}
+            onMarkAllRead={markAllNotificationsAsRead}
+          />
+        )}
 
-      {page === "admin" && (
-        <AdminPanel
-          user={user}
-          reports={reports}
-          catalogs={catalogs}
-          onUpdateStatus={updateStatus}
-          onAddCatalogItem={addCatalogItem}
-          onRemoveCatalogItem={removeCatalogItem}
-        />
-      )}
+        {page === "admin" && (
+          <AdminPanel
+            user={user}
+            reports={reports}
+            catalogs={catalogs}
+            auditTrail={auditTrail}
+            onUpdateStatus={updateStatus}
+            onAddCatalogItem={addCatalogItem}
+            onRemoveCatalogItem={removeCatalogItem}
+            onExportCsv={exportReportsCsv}
+          />
+        )}
+      </main>
 
       <footer className="footer-note">
         &copy; 2026 Manuel Esparza
@@ -546,14 +849,16 @@ function Login({ onLogin }) {
   return (
     <section className="panel">
       <h2>Acceso al sistema</h2>
-      <p className="muted">Usuario demo: cualquier correo válido con contraseña de 4 caracteres o más. Administrador: admin@admin.com / admin123</p>
+      <p className="muted">
+        Usuario demo: cualquier correo válido con contraseña de 4 caracteres o más. Administrador: admin@admin.com / admin123
+      </p>
       <div className="form-grid narrow">
         <label>
-          Correo:
+          Correo
           <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="usuario@correo.com" />
         </label>
         <label>
-          Contraseña:
+          Contraseña
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••" />
         </label>
         <button onClick={() => onLogin(email.trim(), password)}>Entrar</button>
@@ -649,10 +954,19 @@ function CreateReport({ user, reports, catalogs, onCreate }) {
   );
 }
 
-function FilterBar({ catalogs, filters, onChange }) {
+function FilterBar({ catalogs, filters, onChange, isAdmin }) {
   return (
     <section className="panel compact">
-      <div className="filters-grid">
+      <div className="filters-grid expanded">
+        <label>
+          Buscar
+          <input
+            value={filters.search}
+            onChange={(e) => onChange({ ...filters, search: e.target.value })}
+            placeholder="Tipo, ubicación, zona o usuario"
+          />
+        </label>
+
         <label>
           Estatus
           <select value={filters.status} onChange={(e) => onChange({ ...filters, status: e.target.value })}>
@@ -682,20 +996,36 @@ function FilterBar({ catalogs, filters, onChange }) {
             ))}
           </select>
         </label>
+
+        {isAdmin && (
+          <label className="checkbox-row checkbox-card">
+            <input
+              type="checkbox"
+              checked={filters.showHidden}
+              onChange={(e) => onChange({ ...filters, showHidden: e.target.checked })}
+            />
+            <span>Mostrar reportes ocultos por moderación</span>
+          </label>
+        )}
       </div>
     </section>
   );
 }
 
-function ReportList({ reports, onSelect, selectedId }) {
+function ReportList({ reports, onSelect, selectedId, isAdmin }) {
   return (
     <section className="panel">
-      <h2>Explorar reportes</h2>
+      <div className="section-head">
+        <h2>Explorar reportes</h2>
+        <span className="muted">{reports.length} coincidencias</span>
+      </div>
+
       <div className="list-grid">
         {reports.length === 0 && <p className="muted">No hay reportes con esos filtros.</p>}
         {reports.map((report) => (
-          <article
+          <button
             key={report.id}
+            type="button"
             className={`report-card ${selectedId === report.id ? "selected" : ""}`}
             onClick={() => onSelect(report.id)}
           >
@@ -706,35 +1036,44 @@ function ReportList({ reports, onSelect, selectedId }) {
             <p>{report.description}</p>
             <small>{report.zone} · {report.location}</small>
             <small>{formatDate(report.createdAt)}</small>
-          </article>
+            {report.hidden && isAdmin && <span className="status-chip hidden-chip">Oculto por moderación</span>}
+          </button>
         ))}
       </div>
     </section>
   );
 }
 
-function ReportDetail({ report, user, isAdmin, onAddComment, onUpdateStatus }) {
+function ReportDetail({ report, user, isAdmin, onAddComment, onUpdateStatus, onModerateReport, onModerateComment }) {
   const [comment, setComment] = useState("");
   const [note, setNote] = useState("");
+  const [moderationReason, setModerationReason] = useState("");
 
   if (!report) {
     return (
       <section className="panel">
         <h2>Detalle del reporte</h2>
-        <p className="muted">Selecciona un reporte para consultar historial, comentarios y estatus.</p>
+        <p className="muted">Selecciona un reporte para consultar historial, comentarios, estatus y acciones de moderación.</p>
       </section>
     );
   }
 
+  const visibleComments = isAdmin ? report.comments || [] : (report.comments || []).filter((entry) => !entry.hidden);
+
   return (
     <section className="panel">
-      <h2>Detalle del reporte</h2>
+      <div className="section-head">
+        <h2>Detalle del reporte</h2>
+        {report.hidden && <span className="status-chip hidden-chip">Contenido oculto</span>}
+      </div>
+
       <div className="detail-block">
         <p><strong>Tipo:</strong> {report.type}</p>
         <p><strong>Zona:</strong> {report.zone}</p>
         <p><strong>Ubicación:</strong> {report.location}</p>
         <p><strong>Creado por:</strong> {report.createdBy}</p>
         <p><strong>Descripción:</strong> {report.description}</p>
+        {report.hidden && report.hiddenReason && <p><strong>Motivo de moderación:</strong> {report.hiddenReason}</p>}
       </div>
 
       <div className="detail-block">
@@ -750,19 +1089,47 @@ function ReportDetail({ report, user, isAdmin, onAddComment, onUpdateStatus }) {
         </ul>
       </div>
 
+      {isAdmin && (report.moderationHistory || []).length > 0 && (
+        <div className="detail-block">
+          <h3>Historial de moderación</h3>
+          <ul className="timeline compact-list">
+            {report.moderationHistory.map((entry) => (
+              <li key={entry.id}>
+                <strong>{entry.hidden ? "Oculto" : "Restaurado"}</strong> · {formatDate(entry.date)}
+                <p>{entry.by} · {entry.reason}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="detail-block">
         <h3>Comentarios</h3>
-        {(report.comments || []).length === 0 && <p className="muted">Aún no hay comentarios.</p>}
+        {visibleComments.length === 0 && <p className="muted">Aún no hay comentarios visibles.</p>}
         <ul className="timeline compact-list">
-          {(report.comments || []).map((entry) => (
+          {visibleComments.map((entry) => (
             <li key={entry.id}>
-              <strong>{entry.by}</strong> · {formatDate(entry.date)}
+              <div className="comment-head">
+                <div>
+                  <strong>{entry.by}</strong> · {formatDate(entry.date)}
+                  {entry.hidden && isAdmin && <span className="status-chip hidden-chip inline-chip">Oculto</span>}
+                </div>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="inline-action"
+                    onClick={() => onModerateComment(report.id, entry.id, !entry.hidden, moderationReason)}
+                  >
+                    {entry.hidden ? "Restaurar" : "Ocultar"}
+                  </button>
+                )}
+              </div>
               <p>{entry.text}</p>
             </li>
           ))}
         </ul>
 
-        {user && (
+        {user && !report.hidden && (
           <div className="form-grid narrow top-space">
             <label>
               Nuevo comentario
@@ -778,21 +1145,40 @@ function ReportDetail({ report, user, isAdmin, onAddComment, onUpdateStatus }) {
 
       {isAdmin && (
         <div className="detail-block">
-          <h3>Actualizar estatus</h3>
-          <div className="form-grid narrow">
-            <label>
-              Nota administrativa
-              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Opcional" />
+          <h3>Gestión administrativa</h3>
+          <div className="form-grid">
+            <label className="full-width">
+              Nota administrativa / motivo de moderación
+              <input
+                value={moderationReason || note}
+                onChange={(e) => {
+                  setModerationReason(e.target.value);
+                  setNote(e.target.value);
+                }}
+                placeholder="Opcional"
+              />
             </label>
-            <div className="actions-row wrap">
+            <div className="full-width actions-row wrap">
               {STATUS_OPTIONS.map((status) => (
-                <button key={status} onClick={() => {
+                <button key={status} type="button" onClick={() => {
                   onUpdateStatus(report.id, status, note);
                   setNote("");
                 }}>
                   Marcar {status}
                 </button>
               ))}
+            </div>
+            <div className="full-width actions-row wrap">
+              <button
+                type="button"
+                className={report.hidden ? "success-btn" : "danger-btn"}
+                onClick={() => {
+                  onModerateReport(report.id, !report.hidden, moderationReason);
+                  setModerationReason("");
+                }}
+              >
+                {report.hidden ? "Restaurar reporte" : "Ocultar reporte"}
+              </button>
             </div>
           </div>
         </div>
@@ -818,6 +1204,7 @@ function MapBoard({ zoneStats, reports }) {
       </div>
 
       <div className="map-legend">
+        {reports.length === 0 && <p className="muted">No hay incidencias visibles para el mapa.</p>}
         {reports.map((report) => (
           <div key={report.id} className="legend-item">
             <span className={`dot ${report.status.replace(/\s+/g, "-").toLowerCase()}`}></span>
@@ -851,74 +1238,205 @@ function NotificationsPanel({ items, onMarkAllRead }) {
   );
 }
 
-function AdminPanel({ user, reports, catalogs, onUpdateStatus, onAddCatalogItem, onRemoveCatalogItem }) {
+function AdminPanel({
+  user,
+  reports,
+  catalogs,
+  auditTrail,
+  onUpdateStatus,
+  onAddCatalogItem,
+  onRemoveCatalogItem,
+  onExportCsv,
+}) {
   const [typeInput, setTypeInput] = useState("");
   const [zoneInput, setZoneInput] = useState("");
+  const [exportFilters, setExportFilters] = useState({
+    status: "Todos",
+    zone: "Todas",
+    type: "Todos",
+    search: "",
+    showHidden: true,
+  });
+
+  const exportPreview = useMemo(
+    () => filterCollection(reports, exportFilters, exportFilters.showHidden),
+    [reports, exportFilters]
+  );
+
+  const moderatedItems = reports.filter(
+    (report) => report.hidden || (report.comments || []).some((comment) => comment.hidden)
+  );
 
   if (!user) return <section className="panel"><p>Inicia sesión.</p></section>;
   if (user.role !== "admin") return <section className="panel"><p>No tienes permisos de administrador.</p></section>;
 
   return (
     <section className="panel">
-      <h2>Administrar</h2>
-      <div className="content-grid admin-layout">
-        <div className="panel nested">
-          <h3>Catálogo de tipos</h3>
-          <div className="inline-form">
-            <input value={typeInput} onChange={(e) => setTypeInput(e.target.value)} placeholder="Nuevo tipo" />
-            <button onClick={() => {
-              onAddCatalogItem("types", typeInput);
-              setTypeInput("");
-            }}>Agregar</button>
+      <h2>Centro de administración</h2>
+      <p className="muted">Sprint 3: moderación, exportación CSV, accesibilidad y trazabilidad con auditoría.</p>
+
+      <div className="admin-stack">
+        <section className="panel nested">
+          <h3>Exportación CSV</h3>
+          <div className="filters-grid expanded">
+            <label>
+              Buscar
+              <input
+                value={exportFilters.search}
+                onChange={(e) => setExportFilters({ ...exportFilters, search: e.target.value })}
+                placeholder="Filtrar antes de exportar"
+              />
+            </label>
+
+            <label>
+              Estatus
+              <select value={exportFilters.status} onChange={(e) => setExportFilters({ ...exportFilters, status: e.target.value })}>
+                <option>Todos</option>
+                {STATUS_OPTIONS.map((status) => (
+                  <option key={status}>{status}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Zona
+              <select value={exportFilters.zone} onChange={(e) => setExportFilters({ ...exportFilters, zone: e.target.value })}>
+                <option>Todas</option>
+                {catalogs.zones.map((zone) => (
+                  <option key={zone}>{zone}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Tipo
+              <select value={exportFilters.type} onChange={(e) => setExportFilters({ ...exportFilters, type: e.target.value })}>
+                <option>Todos</option>
+                {catalogs.types.map((type) => (
+                  <option key={type}>{type}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="checkbox-row checkbox-card">
+              <input
+                type="checkbox"
+                checked={exportFilters.showHidden}
+                onChange={(e) => setExportFilters({ ...exportFilters, showHidden: e.target.checked })}
+              />
+              <span>Incluir contenido moderado</span>
+            </label>
           </div>
-          <ul className="simple-list">
-            {catalogs.types.map((item) => (
-              <li key={item}>
-                <span>{item}</span>
-                <button onClick={() => onRemoveCatalogItem("types", item)}>Eliminar</button>
-              </li>
-            ))}
-          </ul>
+
+          <div className="toolbar-row">
+            <span className="muted">Reportes listos para exportar: {exportPreview.length}</span>
+            <button type="button" onClick={() => onExportCsv(exportFilters)}>
+              Exportar CSV
+            </button>
+          </div>
+        </section>
+
+        <div className="content-grid admin-layout">
+          <div className="panel nested">
+            <h3>Catálogo de tipos</h3>
+            <div className="inline-form">
+              <input value={typeInput} onChange={(e) => setTypeInput(e.target.value)} placeholder="Nuevo tipo" />
+              <button onClick={() => {
+                onAddCatalogItem("types", typeInput);
+                setTypeInput("");
+              }}>Agregar</button>
+            </div>
+            <ul className="simple-list">
+              {catalogs.types.map((item) => (
+                <li key={item}>
+                  <span>{item}</span>
+                  <button type="button" onClick={() => onRemoveCatalogItem("types", item)}>Eliminar</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="panel nested">
+            <h3>Catálogo de zonas</h3>
+            <div className="inline-form">
+              <input value={zoneInput} onChange={(e) => setZoneInput(e.target.value)} placeholder="Nueva zona" />
+              <button onClick={() => {
+                onAddCatalogItem("zones", zoneInput);
+                setZoneInput("");
+              }}>Agregar</button>
+            </div>
+            <ul className="simple-list">
+              {catalogs.zones.map((item) => (
+                <li key={item}>
+                  <span>{item}</span>
+                  <button type="button" onClick={() => onRemoveCatalogItem("zones", item)}>Eliminar</button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
 
-        <div className="panel nested">
-          <h3>Catálogo de zonas</h3>
-          <div className="inline-form">
-            <input value={zoneInput} onChange={(e) => setZoneInput(e.target.value)} placeholder="Nueva zona" />
-            <button onClick={() => {
-              onAddCatalogItem("zones", zoneInput);
-              setZoneInput("");
-            }}>Agregar</button>
+        <section className="panel nested">
+          <div className="section-head">
+            <h3>Contenido moderado</h3>
+            <span className="muted">{moderatedItems.length} reportes con acciones de moderación</span>
           </div>
-          <ul className="simple-list">
-            {catalogs.zones.map((item) => (
-              <li key={item}>
-                <span>{item}</span>
-                <button onClick={() => onRemoveCatalogItem("zones", item)}>Eliminar</button>
-              </li>
+          <div className="list-grid">
+            {moderatedItems.length === 0 && <p className="muted">No hay contenido moderado.</p>}
+            {moderatedItems.map((report) => (
+              <article key={report.id} className="report-card selected static-card">
+                <div className="card-head">
+                  <strong>{report.type}</strong>
+                  {report.hidden && <span className="status-chip hidden-chip">Reporte oculto</span>}
+                </div>
+                <p>{report.description}</p>
+                <small>{report.zone} · {report.location}</small>
+                <small>Comentarios ocultos: {(report.comments || []).filter((comment) => comment.hidden).length}</small>
+              </article>
             ))}
-          </ul>
-        </div>
-      </div>
+          </div>
+        </section>
 
-      <div className="top-space">
-        <h3>Panel rápido de estatus</h3>
-        <div className="list-grid">
-          {reports.map((report) => (
-            <article key={report.id} className="report-card selected">
-              <div className="card-head">
-                <strong>{report.type}</strong>
-                <select value={report.status} onChange={(e) => onUpdateStatus(report.id, e.target.value, "Cambio desde panel rápido")}>
-                  {STATUS_OPTIONS.map((status) => (
-                    <option key={status}>{status}</option>
-                  ))}
-                </select>
-              </div>
-              <p>{report.description}</p>
-              <small>{report.zone} · {report.location}</small>
-            </article>
-          ))}
-        </div>
+        <section className="panel nested">
+          <h3>Panel rápido de estatus</h3>
+          <div className="list-grid">
+            {reports.map((report) => (
+              <article key={report.id} className="report-card selected static-card">
+                <div className="card-head">
+                  <strong>{report.type}</strong>
+                  <select value={report.status} onChange={(e) => onUpdateStatus(report.id, e.target.value, "Cambio desde panel rápido")}> 
+                    {STATUS_OPTIONS.map((status) => (
+                      <option key={status}>{status}</option>
+                    ))}
+                  </select>
+                </div>
+                <p>{report.description}</p>
+                <small>{report.zone} · {report.location}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel nested">
+          <div className="section-head">
+            <h3>Bitácora de auditoría</h3>
+            <span className="muted">Últimos {Math.min(auditTrail.length, 25)} eventos</span>
+          </div>
+          <div className="audit-list" role="list">
+            {auditTrail.slice(0, 25).map((entry) => (
+              <article key={entry.id} className="audit-item" role="listitem">
+                <div>
+                  <strong>{entry.action}</strong>
+                  <p>{entry.details}</p>
+                </div>
+                <div className="audit-meta">
+                  <span>{entry.actor}</span>
+                  <small>{formatDate(entry.createdAt)}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       </div>
     </section>
   );

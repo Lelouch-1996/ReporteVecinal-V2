@@ -1,4 +1,3 @@
-
 #root {
   width: 100%;
 }
@@ -11,6 +10,40 @@ body {
   margin: 0;
   background: #0f172a;
   color: #e2e8f0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.skip-link {
+  position: absolute;
+  left: 16px;
+  top: -48px;
+  background: #e2e8f0;
+  color: #0f172a;
+  padding: 10px 14px;
+  border-radius: 10px;
+  z-index: 1000;
+}
+
+.skip-link:focus {
+  top: 16px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .app-shell {
@@ -79,7 +112,8 @@ button.active {
 .stat-card,
 .zone-card,
 .notification-card,
-.report-card {
+.report-card,
+.audit-item {
   border: 1px solid #334155;
   background: #111827;
   border-radius: 16px;
@@ -104,7 +138,7 @@ button.active {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -121,6 +155,10 @@ button.active {
 
 .stat-card.accent {
   border-color: #0ea5e9;
+}
+
+.stat-card.warning {
+  border-color: rgba(245, 158, 11, 0.65);
 }
 
 .panel {
@@ -145,11 +183,20 @@ button.active {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.admin-stack {
+  display: grid;
+  gap: 16px;
+}
+
 .filters-grid,
 .form-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filters-grid.expanded {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .form-grid.narrow {
@@ -195,10 +242,18 @@ button {
   color: #e2e8f0;
   padding: 10px 14px;
   font-weight: 600;
+  cursor: pointer;
 }
 
-button:hover {
+button:hover,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.report-card:focus-visible {
   border-color: #38bdf8;
+  outline: 2px solid rgba(56, 189, 248, 0.25);
+  outline-offset: 2px;
 }
 
 button:disabled {
@@ -206,9 +261,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.actions-row {
+.actions-row,
+.toolbar-row {
   display: flex;
   gap: 10px;
+  align-items: center;
+}
+
+.toolbar-row {
+  justify-content: space-between;
+  margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 .actions-row.wrap {
@@ -221,24 +284,34 @@ button:disabled {
 }
 
 .report-card,
-.notification-card {
+.notification-card,
+.audit-item {
   padding: 14px;
 }
 
 .report-card {
-  cursor: pointer;
+  text-align: left;
 }
 
 .report-card.selected {
   border-color: #38bdf8;
 }
 
+.static-card {
+  cursor: default;
+}
+
 .card-head,
-.section-head {
+.section-head,
+.comment-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+}
+
+.comment-head {
+  align-items: flex-start;
 }
 
 .status-chip,
@@ -276,6 +349,30 @@ button:disabled {
   color: #34d399;
 }
 
+.hidden-chip {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fda4af;
+}
+
+.inline-chip {
+  margin-left: 8px;
+}
+
+.inline-action {
+  width: auto;
+  padding: 8px 12px;
+}
+
+.success-btn {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.danger-btn {
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(244, 63, 94, 0.45);
+}
+
 .detail-block {
   border-top: 1px solid #1e293b;
   padding-top: 12px;
@@ -283,9 +380,16 @@ button:disabled {
 }
 
 .timeline,
-.simple-list {
+.simple-list,
+.audit-list {
   margin: 0;
   padding-left: 18px;
+}
+
+.audit-list {
+  padding-left: 0;
+  display: grid;
+  gap: 10px;
 }
 
 .timeline li,
@@ -294,8 +398,24 @@ button:disabled {
 }
 
 .compact-list li p,
-.timeline li p {
+.timeline li p,
+.audit-item p {
   margin: 4px 0 0;
+}
+
+.audit-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.audit-meta {
+  display: grid;
+  gap: 4px;
+  text-align: right;
+  color: #94a3b8;
+  min-width: 180px;
 }
 
 .zone-grid {
@@ -357,6 +477,25 @@ button:disabled {
   align-items: center;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.checkbox-card {
+  align-self: end;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 48px;
+}
+
 .top-space {
   margin-top: 16px;
 }
@@ -388,8 +527,16 @@ button:disabled {
   .actions-row,
   .inline-form,
   .section-head,
-  .card-head {
+  .card-head,
+  .comment-head,
+  .toolbar-row,
+  .audit-item {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .audit-meta {
+    min-width: 0;
+    text-align: left;
   }
 }
