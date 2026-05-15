@@ -1,4 +1,3 @@
-/* Adiciones específicas para las modificaciones del Sprint */
 .api-badge {
   background: #10b981;
   color: #064e3b;
@@ -34,4 +33,3 @@
   to { transform: rotate(360deg); }
 }
 
-/* El resto del CSS se mantiene igual... */

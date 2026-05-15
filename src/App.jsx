@@ -14,7 +14,6 @@ const DEFAULT_CATALOGS = {
 };
 const STATUS_OPTIONS = ["Pendiente", "En proceso", "Resuelto"];
 
-// --- CAPA DE DATOS BASE (A abstraer) ---
 function safeRead(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -26,20 +25,14 @@ function safeRead(key, fallback) {
 function saveJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
-
-// ============================================================================
-// MODIFICACIÓN: Abstracción de Capa de Datos (Preparación para API REST/PostgreSQL)
-// Todas las llamadas de almacenamiento ahora pasan por este servicio,
-// lo que permitirá cambiar a fetch('/api/...') fácilmente en el futuro.
-// ============================================================================
 const ApiService = {
   getReports: () => safeRead(REPORTS_KEY, []).map(ensureReportShape),
   saveReports: (data) => saveJson(REPORTS_KEY, data),
-  
+
   getUser: () => safeRead(USER_KEY, null),
   saveUser: (user) => saveJson(USER_KEY, user),
   clearUser: () => localStorage.removeItem(USER_KEY),
-  
+
   getCatalogs: () => {
     const stored = safeRead(CATALOGS_KEY, null);
     if (!stored) return DEFAULT_CATALOGS;
@@ -49,10 +42,10 @@ const ApiService = {
     };
   },
   saveCatalogs: (data) => saveJson(CATALOGS_KEY, data),
-  
+
   getNotifications: () => safeRead(NOTIFICATIONS_KEY, []),
   saveNotifications: (data) => saveJson(NOTIFICATIONS_KEY, data),
-  
+
   getAuditTrail: () => safeRead(AUDIT_KEY, []),
   saveAuditTrail: (data) => saveJson(AUDIT_KEY, data),
 };
@@ -166,7 +159,7 @@ function filterCollection(reports, filters, includeHidden = false) {
 }
 
 export default function App() {
-  const [isLoading, setIsLoading] = useState(true); // MODIFICACIÓN: Estado de carga asíncrona
+  const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("list");
   const [reports, setReports] = useState([]);
@@ -178,7 +171,6 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
 
   useEffect(() => {
-    // MODIFICACIÓN: Simulación de petición de red para cargar datos (Preparación para API)
     setTimeout(() => {
       seedIfEmpty();
       setUser(ApiService.getUser());
@@ -194,7 +186,7 @@ export default function App() {
   const isAdmin = user?.role === "admin";
   const publicReports = useMemo(() => reports.filter((r) => !r.hidden), [reports]);
   const visibleReports = useMemo(() => filterCollection(reports, filters, isAdmin && filters.showHidden), [reports, filters, isAdmin]);
-  
+
   const stats = useMemo(() => {
     return STATUS_OPTIONS.reduce((acc, status) => {
       acc[status] = publicReports.filter((r) => r.status === status).length;
@@ -295,10 +287,8 @@ export default function App() {
     if (!user || !isAdmin) return;
     const filteredReports = filterCollection(reports, exportFilters, exportFilters.showHidden);
     const csv = buildCsvRows(filteredReports);
-    
-    // MODIFICACIÓN: Integración del BOM (Byte Order Mark) \uFEFF para arreglar acentos en Excel
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-    
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -371,7 +361,6 @@ export default function App() {
   );
 }
 
-// ... [Componentes UI simplificados para mantener concisión en el entregable] ...
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -397,11 +386,11 @@ function CreateReport({ user, catalogs, onCreate }) {
     <section className="panel">
       <h2>Nuevo reporte</h2>
       <div className="form-grid">
-        <select value={type} onChange={(e)=>setType(e.target.value)}>{catalogs.types.map(t=><option key={t}>{t}</option>)}</select>
-        <select value={zone} onChange={(e)=>setZone(e.target.value)}>{catalogs.zones.map(z=><option key={z}>{z}</option>)}</select>
-        <textarea className="full-width" value={description} onChange={(e)=>setDescription(e.target.value)} placeholder="Descripción" />
-        <input className="full-width" value={location} onChange={(e)=>setLocation(e.target.value)} placeholder="Ubicación" />
-        <button onClick={() => onCreate({type, zone, description, location})}>Enviar</button>
+        <select value={type} onChange={(e) => setType(e.target.value)}>{catalogs.types.map(t => <option key={t}>{t}</option>)}</select>
+        <select value={zone} onChange={(e) => setZone(e.target.value)}>{catalogs.zones.map(z => <option key={z}>{z}</option>)}</select>
+        <textarea className="full-width" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descripción" />
+        <input className="full-width" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Ubicación" />
+        <button onClick={() => onCreate({ type, zone, description, location })}>Enviar</button>
       </div>
     </section>
   );
@@ -410,7 +399,7 @@ function CreateReport({ user, catalogs, onCreate }) {
 function FilterBar({ filters, onChange }) {
   return (
     <section className="panel compact">
-      <input value={filters.search} onChange={(e) => onChange({...filters, search: e.target.value})} placeholder="Buscar..." />
+      <input value={filters.search} onChange={(e) => onChange({ ...filters, search: e.target.value })} placeholder="Buscar..." />
     </section>
   );
 }
@@ -420,7 +409,7 @@ function ReportList({ reports, onSelect, selectedId }) {
     <section className="panel list-grid">
       {reports.map((r) => (
         <button key={r.id} className={`report-card ${selectedId === r.id ? "selected" : ""}`} onClick={() => onSelect(r.id)}>
-          <strong>{r.type}</strong> - {r.status} <br/> {r.location}
+          <strong>{r.type}</strong> - {r.status} <br /> {r.location}
         </button>
       ))}
     </section>
@@ -450,7 +439,7 @@ function AdminPanel({ reports, auditTrail, onExportCsv }) {
         Exportar CSV (Acentos corregidos)
       </button>
       <h3>Auditoría ({auditTrail.length})</h3>
-      <ul>{auditTrail.slice(0,5).map(a => <li key={a.id}>{a.action} - {a.actor}</li>)}</ul>
+      <ul>{auditTrail.slice(0, 5).map(a => <li key={a.id}>{a.action} - {a.actor}</li>)}</ul>
     </section>
   );
 }
